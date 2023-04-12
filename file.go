@@ -3,11 +3,9 @@ package secret
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/pablogolobaro/secret/encrypt"
 	"io"
 	"os"
-	"strings"
 	"sync"
 )
 
@@ -22,7 +20,7 @@ type FileVault struct {
 	keyValues   map[string]string
 }
 
-func (f *FileVault) loadKeyValues() error {
+func (f *FileVault) load() error {
 	file, err := os.Open(f.filepath)
 	if err != nil {
 		f.keyValues = make(map[string]string)
@@ -30,64 +28,44 @@ func (f *FileVault) loadKeyValues() error {
 	}
 	defer file.Close()
 
-	var sb strings.Builder
-
-	_, err = io.Copy(&sb, file)
+	r, err := encrypt.DecryptReader(f.encodingKey, file)
 	if err != nil {
 		return err
 	}
 
-	decryptedJSON, err := encrypt.Decrypt(f.encodingKey, sb.String())
-	if err != nil {
-		return err
-	}
-
-	r := strings.NewReader(decryptedJSON)
-
-	dec := json.NewDecoder(r)
-
-	err = dec.Decode(&f.keyValues)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return f.readKeyValues(r)
 }
 
-func (f *FileVault) saveKeyValues() error {
-	var sb strings.Builder
+func (f *FileVault) readKeyValues(r io.Reader) error {
+	dec := json.NewDecoder(r)
+	return dec.Decode(&f.keyValues)
+}
 
-	enc := json.NewEncoder(&sb)
-
-	err := enc.Encode(f.keyValues)
-	if err != nil {
-		return err
-	}
-
-	encryptedJSON, err := encrypt.Encrypt(f.encodingKey, sb.String())
-	if err != nil {
-		return err
-	}
-
+func (f *FileVault) save() error {
 	file, err := os.OpenFile(f.filepath, os.O_RDWR|os.O_CREATE, 0755)
 	if err != nil {
-		return err
+		return nil
 	}
 	defer file.Close()
 
-	_, err = fmt.Fprintf(file, encryptedJSON)
+	w, err := encrypt.EncryptWriter(f.encodingKey, file)
 	if err != nil {
 		return err
 	}
 
-	return nil
+	return f.writeKeyValues(w)
+}
+
+func (f *FileVault) writeKeyValues(w io.Writer) error {
+	enc := json.NewEncoder(w)
+	return enc.Encode(f.keyValues)
 }
 
 func (f *FileVault) Get(key string) (string, error) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	err := f.loadKeyValues()
+	err := f.load()
 	if err != nil {
 		return "", err
 	}
@@ -105,14 +83,12 @@ func (f *FileVault) Set(key, value string) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	err := f.loadKeyValues()
+	err := f.load()
 	if err != nil {
 		return err
 	}
 
 	f.keyValues[key] = value
 
-	err = f.saveKeyValues()
-
-	return nil
+	return f.save()
 }
